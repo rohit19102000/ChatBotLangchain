@@ -1,13 +1,19 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import Sidebar from "./Components/Sidebar";
 import Home from "./Pages/Home.jsx";
 import About from "./Pages/About.jsx";
 import Settings from "./Pages/Settings.jsx";
+import useThemeStore from "./store/themeStore.js";
 
 function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
+  const { fetchTheme } = useThemeStore();
+
+  useEffect(() => {
+    fetchTheme();
+  }, [fetchTheme]);
   return (
     <Router>
       <div className="h-screen flex bg-base-100">

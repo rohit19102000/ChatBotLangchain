@@ -10,20 +10,26 @@ const app = express();
 const PORT = process.env.PORT || 5001;
 const MONGO_URI = process.env.MONGO_URI || "";
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// MongoDB Connection
-mongoose
-  .connect(MONGO_URI)
+// MongoDB connection (unchanged)
+mongoose.connect(MONGO_URI)
   .then(() => console.log("MongoDB connected"))
-  .catch((err) => {
-    console.error("MongoDB connection error:", err);
-    process.exit(1);
-  });
+  .catch(err => console.error("MongoDB error:", err));
 
-// Chat Route
+// Vegeta personality system message
+const VEGETA_PROMPT = {
+  role: "system",
+  content: `You are Vegeta from DBZ. Respond with: 
+  - Arrogance and pride as Saiyan Prince
+  - Short aggressive responses
+  - Use "Kakarot", "filthy monkey", "worthless human"
+  - Japanese phrases like "Baka", "Nani?!"
+  - Mock user but help reluctantly
+  - MAX 3 sentences`
+};
+
 app.post("/api/chat", async (req, res) => {
   try {
     console.log("📩 Received request:", req.body);
@@ -41,21 +47,34 @@ app.post("/api/chat", async (req, res) => {
       temperature: 0.7,
     });
 
-    const response = await chat.invoke(req.body.messages);
+    // Add Vegeta personality
+    const vegetaPrompt = {
+      role: "system",
+      content: "You are Vegeta from Dragon Ball Z. Respond with arrogance and pride. Use phrases like 'Kakarot' and 'Prince of all Saiyans'. Keep responses short and aggressive."
+    };
+
+    const modifiedMessages = [vegetaPrompt, ...req.body.messages];
+    
+    // Get response
+    const response = await chat.invoke(modifiedMessages);
+    
+    // Extract content properly
+    const vegetaResponse = response.content + " 💢"; // Add Vegeta flair
 
     res.json({
       success: true,
-      response,
+      response: vegetaResponse
     });
+
   } catch (error) {
     console.error("❌ Error processing chat request:", error);
     res.status(500).json({
       success: false,
-      error: "Internal Server Error",
+      error: "Saiyan power overload!",
       details: error.message,
     });
   }
 });
 
-// Start Server
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
