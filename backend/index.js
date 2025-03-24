@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
 import { ChatOpenAI } from "@langchain/openai";
+import RateLimit from "./models/RateLimit.js";
 
 dotenv.config();
 
@@ -13,12 +14,41 @@ const MONGO_URI = process.env.MONGO_URI || "";
 app.use(cors());
 app.use(express.json());
 
-// MongoDB connection (unchanged)
 mongoose.connect(MONGO_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(err => console.error("MongoDB error:", err));
 
-// Vegeta personality system message
+const checkRateLimit = async (req, res, next) => {
+  const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+  
+  try {
+    const limit = await RateLimit.findOne({ ipAddress: ip });
+    const now = new Date();
+
+    if (limit) {
+      if (now > limit.resetTime) {
+        limit.count = 0;
+        limit.resetTime = new Date(now.setMinutes(now.getMinutes() + 5));
+        await limit.save();
+      }
+
+      if (limit.count >= 5) {
+        const timeLeft = Math.ceil((limit.resetTime - now) / 1000);
+        return res.status(429).json({
+          success: false,
+          error: `Rate limit exceeded. Try again in ${timeLeft} seconds`,
+          resetTimestamp: limit.resetTime.getTime()
+        });
+      }
+    }
+
+    next();
+  } catch (error) {
+    console.error("Rate limit error:", error);
+    next();
+  }
+};
+
 const VEGETA_PROMPT = {
   role: "system",
   content: `You are Vegeta from DBZ. Respond with: 
@@ -30,11 +60,10 @@ const VEGETA_PROMPT = {
   - MAX 3 sentences`
 };
 
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", checkRateLimit, async (req, res) => {
   try {
-    console.log("📩 Received request:", req.body);
+    const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
-    // Validate input
     if (!req.body.messages || !Array.isArray(req.body.messages)) {
       return res.status(400).json({
         success: false,
@@ -47,19 +76,29 @@ app.post("/api/chat", async (req, res) => {
       temperature: 0.7,
     });
 
-    // Add Vegeta personality
-    const vegetaPrompt = {
-      role: "system",
-      content: "You are Vegeta from Dragon Ball Z. Respond with arrogance and pride. Use phrases like 'Kakarot' and 'Prince of all Saiyans'. Keep responses short and aggressive."
-    };
+    const modifiedMessages = [VEGETA_PROMPT, ...req.body.messages];
+    
+    const response = await chat.invoke(modifiedMessages, {
+      callbacks: [{
+        handleLLMEnd: (output) => {
+          const usage = output.llmOutput?.tokenUsage || {};
+          console.log(`🗠 Token Usage | Prompt: ${usage.promptTokens} | Completion: ${usage.completionTokens} | Total: ${usage.totalTokens}`);
+        }
+      }]
+    });
 
-    const modifiedMessages = [vegetaPrompt, ...req.body.messages];
-    
-    // Get response
-    const response = await chat.invoke(modifiedMessages);
-    
-    // Extract content properly
-    const vegetaResponse = response.content + " 💢"; // Add Vegeta flair
+    await RateLimit.findOneAndUpdate(
+      { ipAddress: ip },
+      {
+        $inc: { count: 1 },
+        $setOnInsert: {
+          resetTime: new Date(Date.now() + 5 * 60 * 1000)
+        }
+      },
+      { upsert: true, new: true }
+    );
+
+    const vegetaResponse = response.content + " 💢";
 
     res.json({
       success: true,
@@ -75,6 +114,5 @@ app.post("/api/chat", async (req, res) => {
     });
   }
 });
-
 
 app.listen(PORT, () => console.log(`Server running on ${PORT}`));
