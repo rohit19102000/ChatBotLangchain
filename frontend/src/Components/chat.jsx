@@ -72,7 +72,7 @@ const Chat = () => {
   const limitReached = resetTimestamp !== null;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" >
       {error && (
         <div className="fixed top-4 right-4 z-50 alert alert-error shadow-lg max-w-md">
           <div className="flex items-center">
