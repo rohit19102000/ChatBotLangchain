@@ -1,74 +1,110 @@
+// ✅ Dependencies
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import cookieParser from "cookie-parser";
 import { ChatOpenAI } from "@langchain/openai";
-import RateLimit from "./models/RateLimit.js";
+import User from "./models/User.js";
+import checkRateLimit from './middlewares/checkRateLimit.js';
 
+// ✅ Config
 dotenv.config();
-
 const app = express();
 const PORT = process.env.PORT || 5001;
 const MONGO_URI = process.env.MONGO_URI || "";
+const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret";
 
-app.use(cors());
+// ✅ Middlewares
+app.use(cors({
+  origin: ["http://localhost:5173", "http://localhost:3000", "https://yourfrontend.com"],
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
+}));
 app.use(express.json());
+app.use(cookieParser());
 
+// ✅ MongoDB Connection
 mongoose.connect(MONGO_URI)
-  .then(() => console.log("MongoDB connected"))
-  .catch(err => console.error("MongoDB error:", err));
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch(err => console.error("❌ MongoDB error:", err));
 
-const checkRateLimit = async (req, res, next) => {
-  const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
   
+
+// ✅ JWT Authentication Middleware
+const authenticateUser = async (req, res, next) => {
+  const token = req.cookies.token;
+  if (!token) return res.status(401).json({ success: false, error: "Unauthorized: No token provided" });
+
   try {
-    const limit = await RateLimit.findOne({ ipAddress: ip });
-    const now = new Date();
-
-    if (limit) {
-      if (now > limit.resetTime) {
-        limit.count = 0;
-        limit.resetTime = new Date(now.setMinutes(now.getMinutes() + 5));
-        await limit.save();
-      }
-
-      if (limit.count >= 5) {
-        const timeLeft = Math.ceil((limit.resetTime - now) / 1000);
-        return res.status(429).json({
-          success: false,
-          error: `Rate limit exceeded. Try again in ${timeLeft} seconds`,
-          resetTimestamp: limit.resetTime.getTime()
-        });
-      }
-    }
-
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
     next();
   } catch (error) {
-    console.error("Rate limit error:", error);
-    next();
+    res.status(401).json({ success: false, error: "Unauthorized: Invalid token" });
   }
 };
 
+// ✅ User Signup
+app.post("/api/auth/signup", async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ success: false, error: "All fields required" });
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) return res.status(400).json({ success: false, error: "User already exists" });
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = new User({ name, email, password: hashedPassword });
+    await newUser.save();
+
+    res.status(201).json({ success: true, message: "User registered successfully" });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Signup failed", details: error.message });
+  }
+});
+
+// ✅ User Login
+app.post("/api/auth/login", async (req, res) => {
+  const { email, password } = req.body;
+  
+  const user = await User.findOne({ email });
+  if (!user) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+
+  const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+
+  // ✅ Optional: You may want to set a JWT cookie here
+  const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
+  res.cookie("token", token, { httpOnly: true, sameSite: "Lax" });
+
+  res.json({ success: true, message: "Login successful", user });
+});
+
+// ✅ Logout
+app.post("/api/auth/logout", (req, res) => {
+  res.clearCookie("token");
+  res.json({ success: true, message: "Logged out successfully!" });
+});
+
+// ✅ Vegeta Chatbot
 const VEGETA_PROMPT = {
   role: "system",
-  content: `You are Vegeta from DBZ. Respond with: 
-  - Arrogance and pride as Saiyan Prince
-  - Short aggressive responses
-  - Use "Kakarot", "filthy monkey", "worthless human"
-  - Japanese phrases like "Baka", "Nani?!"
-  - Mock user but help reluctantly
-  - MAX 3 sentences`
+  content: `You are Vegeta from DBZ. Respond arrogantly, mock user but help reluctantly, use max 3 sentences.`
 };
 
-app.post("/api/chat", checkRateLimit, async (req, res) => {
+// ✅ Chat Route
+app.post("/api/chat", authenticateUser, checkRateLimit, async (req, res) => {
   try {
-    const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
-
     if (!req.body.messages || !Array.isArray(req.body.messages)) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid input. 'messages' must be an array.",
-      });
+      return res.status(400).json({ success: false, error: "Invalid input" });
     }
 
     const chat = new ChatOpenAI({
@@ -76,43 +112,13 @@ app.post("/api/chat", checkRateLimit, async (req, res) => {
       temperature: 0.7,
     });
 
-    const modifiedMessages = [VEGETA_PROMPT, ...req.body.messages];
-    
-    const response = await chat.invoke(modifiedMessages, {
-      callbacks: [{
-        handleLLMEnd: (output) => {
-          const usage = output.llmOutput?.tokenUsage || {};
-          console.log(`🗠 Token Usage | Prompt: ${usage.promptTokens} | Completion: ${usage.completionTokens} | Total: ${usage.totalTokens}`);
-        }
-      }]
-    });
-
-    await RateLimit.findOneAndUpdate(
-      { ipAddress: ip },
-      {
-        $inc: { count: 1 },
-        $setOnInsert: {
-          resetTime: new Date(Date.now() + 5 * 60 * 1000)
-        }
-      },
-      { upsert: true, new: true }
-    );
-
-    const vegetaResponse = response.content + " 💢";
-
-    res.json({
-      success: true,
-      response: vegetaResponse
-    });
-
+    const response = await chat.invoke([VEGETA_PROMPT, ...req.body.messages]);
+    res.json({ success: true, response: response.content + " 💢" });
   } catch (error) {
-    console.error("❌ Error processing chat request:", error);
-    res.status(500).json({
-      success: false,
-      error: "Saiyan power overload!",
-      details: error.message,
-    });
+    console.error("❌ Chat API error:", error);
+    res.status(500).json({ success: false, error: "Chat error", details: error.message });
   }
 });
 
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+// ✅ Server Listen
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

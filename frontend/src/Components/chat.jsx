@@ -1,6 +1,7 @@
 
 import { useState, useEffect } from "react";
 import axios from "axios";
+import useAuthStore from "../store/useAuthStore";
 
 const Chat = () => {
   const [messages, setMessages] = useState([]);
@@ -9,8 +10,9 @@ const Chat = () => {
   const [resetTimestamp, setResetTimestamp] = useState(null);
   const [timeLeft, setTimeLeft] = useState(null);
   const [loading, setLoading] = useState(false);
+  const { user } = useAuthStore();
 
-  // Effect to update countdown timer dynamically
+  
   useEffect(() => {
     if (!resetTimestamp) return;
 
@@ -46,9 +48,16 @@ const Chat = () => {
     setLoading(true);
 
     try {
-      const res = await axios.post("http://localhost:5001/api/chat", {
-        messages: [...messages, userMessage],
-      });
+      const res = await axios.post(
+        "http://localhost:5001/api/chat",
+        { messages: [...messages, userMessage] },
+        {
+          headers: {
+            Authorization: `Bearer ${user?.token}`, // 🔥 include token here
+          },
+          withCredentials: true,
+        }
+      );
 
       if (res.data.success) {
         setMessages((prev) => [
