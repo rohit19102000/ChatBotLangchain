@@ -1,7 +1,14 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { NavLink } from "react-router-dom";
+import useChatStore from "../store/UseChatStore";
 
 const Sidebar = ({ isOpen, setIsOpen }) => {
+
+  const { chatHistory, fetchChatHistory, selectChat } = useChatStore();
+
+  useEffect(() => {
+    fetchChatHistory();
+  }, [fetchChatHistory]);
     return (
       <div className="h-full p-8">
         {/* Close Button */}
@@ -54,7 +61,21 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
               Settings
             </NavLink>
           </li>
+
         </ul>
+       {/* Chat History Section */}
+       <h2 className="mt-4 text-lg font-bold">Chat History</h2>
+      <ul className="space-y-2">
+        {chatHistory.map((chat, index) => (
+          <li 
+            key={index} 
+            className="cursor-pointer text-blue-500 hover:underline"
+            onClick={() => selectChat(chat)}
+          >
+            Chat {index + 1}
+          </li>
+        ))}
+      </ul>
       </div>
     );
   };

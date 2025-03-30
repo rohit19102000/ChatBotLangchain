@@ -1,4 +1,3 @@
-// ✅ Dependencies
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -8,6 +7,7 @@ import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
 import { ChatOpenAI } from "@langchain/openai";
 import User from "./models/User.js";
+import Chat from "./models/Chat.js"; 
 import checkRateLimit from './middlewares/checkRateLimit.js';
 
 // ✅ Config
@@ -31,8 +31,6 @@ app.use(cookieParser());
 mongoose.connect(MONGO_URI)
   .then(() => console.log("✅ MongoDB connected"))
   .catch(err => console.error("❌ MongoDB error:", err));
-
-  
 
 // ✅ JWT Authentication Middleware
 const authenticateUser = async (req, res, next) => {
@@ -81,7 +79,6 @@ app.post("/api/auth/login", async (req, res) => {
     return res.status(401).json({ error: "Invalid credentials" });
   }
 
-  // ✅ Optional: You may want to set a JWT cookie here
   const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
   res.cookie("token", token, { httpOnly: true, sameSite: "Lax" });
 
@@ -100,7 +97,7 @@ const VEGETA_PROMPT = {
   content: `You are Vegeta from DBZ. Respond arrogantly, mock user but help reluctantly, use max 3 sentences.`
 };
 
-// ✅ Chat Route
+// ✅ Chat Route (Save & Respond)
 app.post("/api/chat", authenticateUser, checkRateLimit, async (req, res) => {
   try {
     if (!req.body.messages || !Array.isArray(req.body.messages)) {
@@ -113,10 +110,51 @@ app.post("/api/chat", authenticateUser, checkRateLimit, async (req, res) => {
     });
 
     const response = await chat.invoke([VEGETA_PROMPT, ...req.body.messages]);
+
+    // ✅ Save the chat to MongoDB
+    let userChat = await Chat.findOne({ userId: req.user.id });
+
+    if (!userChat) {
+      userChat = new Chat({ userId: req.user.id, chats: [] });
+    }
+
+    userChat.chats.push({
+      messages: [...req.body.messages, { role: "assistant", content: response.content + " 💢" }]
+    });
+
+    await userChat.save();
+
     res.json({ success: true, response: response.content + " 💢" });
   } catch (error) {
     console.error("❌ Chat API error:", error);
     res.status(500).json({ success: false, error: "Chat error", details: error.message });
+  }
+});
+
+// ✅ Get Chat History
+app.get("/api/chat/history", authenticateUser, async (req, res) => {
+  try {
+    const chatHistory = await Chat.findOne({ userId: req.user.id });
+
+    if (!chatHistory || chatHistory.chats.length === 0) {
+      return res.status(200).json({ success: true, chats: [] });
+    }
+
+    res.json({ success: true, chats: chatHistory.chats });
+  } catch (error) {
+    console.error("❌ Fetch chat history error:", error);
+    res.status(500).json({ success: false, error: "Failed to retrieve chat history", details: error.message });
+  }
+});
+
+// ✅ Delete Chat History
+app.delete("/api/chat/history", authenticateUser, async (req, res) => {
+  try {
+    await Chat.findOneAndDelete({ userId: req.user.id });
+    res.json({ success: true, message: "Chat history deleted" });
+  } catch (error) {
+    console.error("❌ Delete chat history error:", error);
+    res.status(500).json({ success: false, error: "Failed to delete chat history", details: error.message });
   }
 });
 

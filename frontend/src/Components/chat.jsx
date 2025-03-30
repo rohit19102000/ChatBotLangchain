@@ -1,18 +1,19 @@
-
 import { useState, useEffect } from "react";
 import axios from "axios";
 import useAuthStore from "../store/useAuthStore";
+import useChatStore from "../store/UseChatStore";
 
 const Chat = () => {
-  const [messages, setMessages] = useState([]);
+  const { user } = useAuthStore();
+  const { selectedChat } = useChatStore();
+  
+  const [messages, setMessages] = useState([]); 
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const [resetTimestamp, setResetTimestamp] = useState(null);
   const [timeLeft, setTimeLeft] = useState(null);
   const [loading, setLoading] = useState(false);
-  const { user } = useAuthStore();
 
-  
   useEffect(() => {
     if (!resetTimestamp) return;
 
@@ -31,65 +32,76 @@ const Chat = () => {
     return () => clearInterval(interval);
   }, [resetTimestamp]);
 
-
-  const formatTime = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
-  };
+  useEffect(() => {
+    if (selectedChat) {
+      setMessages(selectedChat.messages || []); 
+    }
+  }, [selectedChat]);
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
 
     const userMessage = { role: "user", content: input };
+
+    console.log("Before sending:", messages);  
+    console.log("Sending:", input); 
+
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setError("");
     setLoading(true);
 
     try {
-      const res = await axios.post(
-        "http://localhost:5001/api/chat",
-        { messages: [...messages, userMessage] },
-        {
-          headers: {
-            Authorization: `Bearer ${user?.token}`, // 🔥 include token here
-          },
-          withCredentials: true,
+        const res = await axios.post(
+            "http://localhost:5001/api/chat",
+            { messages: [...messages, userMessage], chatId: selectedChat?._id }, // Ensure chatId is included
+            {
+                headers: {
+                    Authorization: `Bearer ${user?.token}`,
+                },
+                withCredentials: true,
+            }
+        );
+
+        console.log("API Response:", res.data); 
+
+        if (res.data.success) {
+            const assistantMessage = {
+                role: "assistant",
+                content: res.data.response || "Nani?!",
+                isVegeta: true
+            };
+
+            setMessages((prev) => [...prev, assistantMessage]);
+
+            console.log("After response:", messages); 
+        } else {
+            setError("Unexpected error: Response not successful.");
         }
-      );
-
-      if (res.data.success) {
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: res.data.response || "Nani?!", isVegeta: true },
-        ]);
-      }
     } catch (error) {
-      if (error.response?.status === 429) {
-        const serverResetTime = error.response.data.resetTimestamp;
-        setResetTimestamp(serverResetTime);
-      } else {
-        setError("Vegeta's scouter is broken! Try again later.");
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
+        console.error("Error:", error);
 
-  const messagesUsed = messages.filter((m) => m.role === "user").length;
+        if (error.response?.status === 429) {
+            const serverResetTime = error.response.data.resetTimestamp;
+            setResetTimestamp(serverResetTime);
+        } else {
+            setError("Vegeta's scouter is broken! Try again later.");
+        }
+    } finally {
+        setLoading(false);
+    }
+};
+
+  const messagesUsed = messages.filter((m) => m.role === "user").length || 0;
   const limitReached = resetTimestamp !== null;
 
   return (
-    <div className="flex flex-col h-full" >
+    <div className="flex flex-col h-full">
       {error && (
         <div className="fixed top-4 right-4 z-50 alert alert-error shadow-lg max-w-md">
           <div className="flex items-center">
-            <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current flex-shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
             <span className="ml-2">
-              {limitReached ? `Wait ${formatTime(timeLeft)}` : error}
+              {limitReached ? `Wait ${timeLeft}s` : error}
             </span>
           </div>
         </div>
@@ -105,11 +117,6 @@ const Chat = () => {
                   ? "ml-auto bg-primary text-primary-content max-w-[80%]"
                   : "bg-error text-error-content font-bold border-2 border-neutral max-w-[80%]"
               }`}
-              style={{
-                fontFamily: msg.isVegeta ? "'Noto Sans JP', sans-serif" : "inherit",
-                transform: msg.isVegeta ? "skewX(-5deg)" : "none",
-                wordBreak: "break-word",
-              }}
             >
               {msg.isVegeta && <span className="mr-2">👑</span>}
               {msg.content}
@@ -146,17 +153,12 @@ const Chat = () => {
             </button>
           </div>
           <div className="text-sm text-neutral-content mt-2 text-center">
-            {limitReached ? `0 messages left - Wait ${formatTime(timeLeft)}` : `${5 - messagesUsed} messages remaining`}
+            {limitReached ? `0 messages left - Wait ${timeLeft}s` : `${5 - messagesUsed} messages remaining`}
           </div>
         </div>
       </div>
-
-      <style>
-        {`@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@500&display=swap');`}
-      </style>
     </div>
   );
 };
 
 export default Chat;
-
