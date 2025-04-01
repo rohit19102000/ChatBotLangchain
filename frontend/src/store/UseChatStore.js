@@ -19,6 +19,19 @@ const useChatStore = create((set) => ({
   },
 
   selectChat: (chat) => set({ selectedChat: chat }),
+  
+  deleteChat: async (chatId) => {
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/api/chat/${chatId}`, { withCredentials: true });
+      if (response.data.success) {
+        set((state) => ({
+          chatHistory: state.chatHistory.filter(chat => chat._id !== chatId)
+        }));
+      }
+    } catch (error) {
+      console.error("Failed to delete chat:", error.response?.data || error.message);
+    }
+  },
 }));
 
 export default useChatStore;

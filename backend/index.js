@@ -8,29 +8,45 @@ import cookieParser from "cookie-parser";
 import { ChatOpenAI } from "@langchain/openai";
 import User from "./models/User.js";
 import Chat from "./models/Chat.js"; 
-import checkRateLimit from './middlewares/checkRateLimit.js';
+import checkRateLimit from "./middlewares/checkRateLimit.js";
 
 // ✅ Config
 dotenv.config();
+
+// 🔥 Critical environment validation
+const requiredEnvVars = ["MONGO_URI", "OPENAI_API_KEY"];
+requiredEnvVars.forEach((varName) => {
+  if (!process.env[varName]) {
+    throw new Error(`❌ FATAL ERROR: Missing required environment variable: ${varName}`);
+  }
+});
+
+// ✅ JWT Secret Handling
+const JWT_SECRET = process.env.JWT_SECRET || "my-secret-key";
+if (!process.env.JWT_SECRET) {
+  console.warn("⚠️ Warning: Using default JWT secret. Set JWT_SECRET in environment variables for better security.");
+}
+
 const app = express();
 const PORT = process.env.PORT || 5001;
-const MONGO_URI = process.env.MONGO_URI || "";
-const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret";
 
 // ✅ Middlewares
-app.use(cors({
-  origin: ["http://localhost:5173", "http://localhost:3000", "https://yourfrontend.com"],
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true
-}));
+app.use(
+  cors({
+    origin: ["http://localhost:5173", "http://localhost:3000", "https://yourfrontend.com"],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
 app.use(express.json());
 app.use(cookieParser());
 
 // ✅ MongoDB Connection
-mongoose.connect(MONGO_URI)
+mongoose
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("❌ MongoDB error:", err));
+  .catch((err) => console.error("❌ MongoDB error:", err));
 
 // ✅ JWT Authentication Middleware
 const authenticateUser = async (req, res, next) => {
@@ -50,10 +66,14 @@ const authenticateUser = async (req, res, next) => {
 app.post("/api/auth/signup", async (req, res) => {
   try {
     const { name, email, password } = req.body;
-    if (!name || !email || !password) return res.status(400).json({ success: false, error: "All fields required" });
+    if (!name || !email || !password) {
+      return res.status(400).json({ success: false, error: "All fields required" });
+    }
 
     const existingUser = await User.findOne({ email });
-    if (existingUser) return res.status(400).json({ success: false, error: "User already exists" });
+    if (existingUser) {
+      return res.status(400).json({ success: false, error: "User already exists" });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = new User({ name, email, password: hashedPassword });
@@ -67,22 +87,34 @@ app.post("/api/auth/signup", async (req, res) => {
 
 // ✅ User Login
 app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body;
-  
-  const user = await User.findOne({ email });
-  if (!user) {
-    return res.status(401).json({ error: "Invalid credentials" });
+  try {
+    const { email, password } = req.body;
+    
+    const user = await User.findOne({ email }).lean();
+    if (!user) {
+      return res.status(401).json({ success: false, error: "Invalid credentials" });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ success: false, error: "Invalid credentials" });
+    }
+
+    const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "7d" });
+    
+    const { password: _, __v, ...safeUser } = user;
+
+    res.cookie("token", token, { 
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.json({ success: true, message: "Login successful", user: safeUser });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Login failed", details: error.message });
   }
-
-  const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) {
-    return res.status(401).json({ error: "Invalid credentials" });
-  }
-
-  const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
-  res.cookie("token", token, { httpOnly: true, sameSite: "Lax" });
-
-  res.json({ success: true, message: "Login successful", user });
 });
 
 // ✅ Logout
@@ -94,10 +126,10 @@ app.post("/api/auth/logout", (req, res) => {
 // ✅ Vegeta Chatbot
 const VEGETA_PROMPT = {
   role: "system",
-  content: `You are Vegeta from DBZ. Respond arrogantly, mock user but help reluctantly, use max 3 sentences.`
+  content: "You are Vegeta from DBZ. Respond arrogantly, mock user but help reluctantly, use max 3 sentences."
 };
 
-// ✅ Chat Route (Save & Respond)
+// ✅ Chat Route
 app.post("/api/chat", authenticateUser, checkRateLimit, async (req, res) => {
   try {
     if (!req.body.messages || !Array.isArray(req.body.messages)) {
@@ -111,50 +143,37 @@ app.post("/api/chat", authenticateUser, checkRateLimit, async (req, res) => {
 
     const response = await chat.invoke([VEGETA_PROMPT, ...req.body.messages]);
 
-    // ✅ Save the chat to MongoDB
     let userChat = await Chat.findOne({ userId: req.user.id });
-
     if (!userChat) {
       userChat = new Chat({ userId: req.user.id, chats: [] });
     }
 
-    userChat.chats.push({
-      messages: [...req.body.messages, { role: "assistant", content: response.content + " 💢" }]
-    });
-
+    userChat.chats.push({ messages: [...req.body.messages, { role: "assistant", content: response.content + " 💢" }] });
     await userChat.save();
 
     res.json({ success: true, response: response.content + " 💢" });
   } catch (error) {
-    console.error("❌ Chat API error:", error);
     res.status(500).json({ success: false, error: "Chat error", details: error.message });
   }
 });
 
-// ✅ Get Chat History
 app.get("/api/chat/history", authenticateUser, async (req, res) => {
   try {
-    const chatHistory = await Chat.findOne({ userId: req.user.id });
-
-    if (!chatHistory || chatHistory.chats.length === 0) {
-      return res.status(200).json({ success: true, chats: [] });
-    }
-
-    res.json({ success: true, chats: chatHistory.chats });
+    const userChat = await Chat.findOne({ userId: req.user.id });
+    res.json({ success: true, chats: userChat?.chats || [] });
   } catch (error) {
-    console.error("❌ Fetch chat history error:", error);
-    res.status(500).json({ success: false, error: "Failed to retrieve chat history", details: error.message });
+    res.status(500).json({ success: false, error: "Failed to fetch chat history" });
   }
 });
 
 // ✅ Delete Chat History
-app.delete("/api/chat/history", authenticateUser, async (req, res) => {
+app.delete("/api/chat/:chatId", authenticateUser, async (req, res) => {
   try {
-    await Chat.findOneAndDelete({ userId: req.user.id });
-    res.json({ success: true, message: "Chat history deleted" });
+    const { chatId } = req.params;
+    await Chat.updateOne({ userId: req.user.id }, { $pull: { chats: { _id: chatId } } });
+    res.json({ success: true, message: "Chat deleted successfully" });
   } catch (error) {
-    console.error("❌ Delete chat history error:", error);
-    res.status(500).json({ success: false, error: "Failed to delete chat history", details: error.message });
+    res.status(500).json({ success: false, error: "Failed to delete chat" });
   }
 });
 
